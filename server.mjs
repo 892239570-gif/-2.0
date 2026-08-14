@@ -105,6 +105,7 @@ async function captureVisibleChrome(url, platform, screenshotPath, domPath, logP
   const target = targets.find((item) => item.type === "page" && item.url.includes(platform)) || targets.find((item) => item.type === "page");
   if (!target?.webSocketDebuggerUrl) throw new Error("采集浏览器中没有可用页面。请保持采集浏览器窗口打开后重试。");
   try {
+    await commandDevTools(target.webSocketDebuggerUrl, "Page.bringToFront");
     await commandDevTools(target.webSocketDebuggerUrl, "Page.navigate", { url });
     let dom = "";
     let videoReady = platform !== "douyin.com";
