@@ -3,7 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { extname, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseDouyinPage } from "./platforms/douyin.js";
+import { discoverDouyinWorks, discoverDouyinWorksFromResponses, douyinPublishedDate, parseDouyinPage } from "./platforms/douyin.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 4173);
@@ -94,16 +94,7 @@ async function commandDevTools(webSocketUrl, method, params = {}) {
 }
 
 async function captureVisibleChrome(url, platform, screenshotPath, domPath, logPath) {
-  let targets;
-  try {
-    const response = await fetch(`http://127.0.0.1:${chromeDebugPort}/json/list`);
-    if (!response.ok) throw new Error("debug endpoint unavailable");
-    targets = await response.json();
-  } catch {
-    throw new Error("未连接到采集浏览器。请点击“打开采集浏览器”，完成登录后保持该窗口打开，再开始采集。");
-  }
-  const target = targets.find((item) => item.type === "page" && item.url.includes(platform)) || targets.find((item) => item.type === "page");
-  if (!target?.webSocketDebuggerUrl) throw new Error("采集浏览器中没有可用页面。请保持采集浏览器窗口打开后重试。");
+  const target = await visibleChromeTarget(platform);
   try {
     await commandDevTools(target.webSocketDebuggerUrl, "Page.bringToFront");
     await commandDevTools(target.webSocketDebuggerUrl, "Page.navigate", { url });
@@ -131,6 +122,71 @@ async function captureVisibleChrome(url, platform, screenshotPath, domPath, logP
     await writeFile(logPath, String(error.message || error));
     throw error;
   }
+}
+
+async function visibleChromeTarget(platform) {
+  let targets;
+  try {
+    const response = await fetch(`http://127.0.0.1:${chromeDebugPort}/json/list`);
+    if (!response.ok) throw new Error("debug endpoint unavailable");
+    targets = await response.json();
+  } catch {
+    throw new Error("未连接到采集浏览器。请点击“打开采集浏览器”，完成登录后保持该窗口打开，再开始采集。");
+  }
+  const target = targets.find((item) => item.type === "page" && item.url.includes(platform)) || targets.find((item) => item.type === "page");
+  if (!target?.webSocketDebuggerUrl) throw new Error("采集浏览器中没有可用页面。请保持采集浏览器窗口打开后重试。");
+  return target;
+}
+
+async function readVisibleChromeDom(url, platform, { scrollPasses = 0, waitForWorks = false } = {}) {
+  const target = await visibleChromeTarget(platform);
+  await commandDevTools(target.webSocketDebuggerUrl, "Page.bringToFront");
+  await commandDevTools(target.webSocketDebuggerUrl, "Page.navigate", { url });
+  if (waitForWorks) await commandDevTools(target.webSocketDebuggerUrl, "Runtime.evaluate", { expression: "document.querySelector('#semiTabpost')?.click()" });
+  let dom = "";
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await delay(3000);
+    const result = await commandDevTools(target.webSocketDebuggerUrl, "Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
+    dom = result.result?.value || "";
+    if (dom.length > 180 && (!waitForWorks || discoverDouyinWorks(dom).length)) break;
+  }
+  if (!dom) throw new Error("页面未返回内容。请确认采集浏览器中的页面可正常打开后重试。");
+  for (let pass = 0; pass < scrollPasses; pass += 1) {
+    await commandDevTools(target.webSocketDebuggerUrl, "Runtime.evaluate", { expression: "(() => { const container = document.querySelector('.route-scroll-container'); const scroller = container || document.scrollingElement || document.body; scroller.scrollTo(0, scroller.scrollHeight); })()" });
+    await delay(3000);
+    const result = await commandDevTools(target.webSocketDebuggerUrl, "Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
+    dom = result.result?.value || dom;
+  }
+  return dom;
+}
+
+async function observeVisibleChromeResponses(url, platform) {
+  const target = await visibleChromeTarget(platform);
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    const tracked = new Map();
+    const responses = [];
+    let nextId = 1;
+    let timer;
+    const finish = () => { clearTimeout(timer); socket.close(); resolve(responses); };
+    const send = (method, params = {}) => { const id = nextId; nextId += 1; socket.send(JSON.stringify({ id, method, params })); return id; };
+    socket.addEventListener("open", () => { send("Network.enable"); send("Page.bringToFront"); send("Page.navigate", { url }); timer = setTimeout(finish, 24000); });
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(event.data);
+      if (message.method === "Network.responseReceived") {
+        const response = message.params.response;
+        if (response.url.includes("douyin.com") && (response.mimeType?.includes("json") || /aweme|post|feed/.test(response.url))) tracked.set(message.params.requestId, response.url);
+      }
+      if (message.method === "Network.loadingFinished" && tracked.has(message.params.requestId)) {
+        const id = send("Network.getResponseBody", { requestId: message.params.requestId });
+        tracked.set(id, tracked.get(message.params.requestId));
+      }
+      if (message.id && tracked.has(message.id) && message.result?.body) {
+        try { responses.push({ url: tracked.get(message.id), body: JSON.parse(message.result.body) }); } catch { /* Ignore non-JSON payloads. */ }
+      }
+    });
+    socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("无法监听采集浏览器的主页加载响应。")); });
+  });
 }
 
 function platformHome(platform) {
@@ -198,9 +254,91 @@ async function capture(request, response) {
   }
 }
 
+function validDateInput(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+}
+
+function isInRange(date, startDate, endDate) {
+  return Boolean(date && date >= startDate && date <= endDate);
+}
+
+async function discoverProfile(request, response) {
+  let payload;
+  try { payload = await jsonBody(request); } catch { response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ error: "请求格式无效。" })); return; }
+  let profileUrl;
+  try { profileUrl = new URL(payload.url); } catch { response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ error: "请输入有效的达人主页链接。" })); return; }
+  const platform = platformFor(profileUrl.href);
+  if (platform !== "douyin.com" || !profileUrl.pathname.startsWith("/user/")) {
+    response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ error: "当前 Phase 3 仅支持抖音达人主页链接。其他平台尚未实现，不能假装已采集。" }));
+    return;
+  }
+  const startDate = payload.startDate;
+  const endDate = payload.endDate;
+  const maxItems = Number(payload.maxItems);
+  if (!validDateInput(startDate) || !validDateInput(endDate) || startDate > endDate) {
+    response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ error: "请选择有效的开始和结束日期。" }));
+    return;
+  }
+  if (!Number.isInteger(maxItems) || ![10, 20, 50, 100].includes(maxItems)) {
+    response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ error: "最大采集数量仅支持 10、20、50 或 100。" }));
+    return;
+  }
+  const taskId = safeTaskId();
+  const taskDir = join(tasksRoot, taskId);
+  const dataDir = join(taskDir, "task_data");
+  await mkdir(dataDir, { recursive: true });
+  const profileDomPath = join(dataDir, "profile.html");
+  const logPath = join(dataDir, "browser.log");
+  try {
+    const responses = await observeVisibleChromeResponses(profileUrl.href, platform);
+    await writeFile(profileDomPath, "主页作品通过采集浏览器的实时网络响应读取；为保护登录数据，不保存完整响应内容。\n");
+    const candidates = discoverDouyinWorksFromResponses(responses.map((response) => response.body)).slice(0, Math.min(maxItems * 3, 120));
+    if (!candidates.length) throw new Error("未从该主页发现可访问的作品链接。请确认主页公开可见，并在采集浏览器中保持登录。 ");
+    const works = [];
+    const skipped = { outOfRange: 0, missingDate: 0, failed: 0, samples: [] };
+    for (const candidate of candidates) {
+      if (works.length >= maxItems) break;
+      try {
+        let date = candidate.publishedAt;
+        if (!date) {
+          const workDom = await readVisibleChromeDom(candidate.url, platform);
+          date = douyinPublishedDate(workDom);
+        }
+        if (!date) { skipped.missingDate += 1; if (skipped.samples.length < 10) skipped.samples.push({ url: candidate.url, reason: "missing-date" }); continue; }
+        if (!isInRange(date, startDate, endDate)) { skipped.outOfRange += 1; if (skipped.samples.length < 10) skipped.samples.push({ url: candidate.url, publishedAt: date, reason: "out-of-range" }); continue; }
+        works.push({ ...candidate, publishedAt: date });
+      } catch {
+        skipped.failed += 1;
+      }
+    }
+    const result = {
+      taskId,
+      mode: "profile-discovery",
+      platform,
+      profileUrl: profileUrl.href,
+      startDate,
+      endDate,
+      maxItems,
+      discoveredCandidates: candidates.length,
+      works,
+      skipped,
+      note: works.length === maxItems ? "已按主页可访问顺序达到最大数量。" : "已遍历当前可访问的主页作品；未获取发布时间的作品未被纳入范围结果。",
+    };
+    await writeFile(join(dataDir, "result.json"), JSON.stringify(result, null, 2));
+    response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify(result));
+  } catch (error) {
+    await writeFile(logPath, String(error.message || error));
+    response.writeHead(502, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ taskId, error: error.message, loginStatus: "not-determined" }));
+  }
+}
+
 const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/api/browser/open-login") { await openLoginBrowser(request, response); return; }
   if (request.method === "POST" && request.url === "/api/capture") { await capture(request, response); return; }
+  if (request.method === "POST" && request.url === "/api/profile/discover") { await discoverProfile(request, response); return; }
   const requestedPath = request.url === "/" ? "/index.html" : request.url.split("?")[0];
   const baseDir = requestedPath.startsWith("/tasks/") ? tasksRoot : join(root, "public");
   const filePath = normalize(join(baseDir, requestedPath.startsWith("/tasks/") ? requestedPath.slice("/tasks/".length) : requestedPath));

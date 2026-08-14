@@ -4,6 +4,7 @@ const app = document.querySelector("#app");
 const navigation = [
   ["home", "⌂", "首页"],
   ["new", "+", "新建采集"],
+  ["profile", "⌕", "主页采集"],
   ["update", "↻", "更新已有数据"],
   ["history", "▤", "任务记录"],
   ["settings", "⚙", "设置"],
@@ -48,8 +49,42 @@ function renderCaptureResult(result) { document.querySelector("#capture-result")
 function renderCaptureError(message) { document.querySelector("#capture-result").innerHTML = `<section class="section"><div class="notice error-notice"><strong>采集失败</strong><br>${escapeHtml(message)}<br><span>任务已记录为失败，可再次点击采集。</span></div></section>`; }
 function metric(label, value) { return `<div class="metric"><span>${label}</span><strong>${value === null || value === undefined ? "" : Number(value).toLocaleString("zh-CN")}</strong><small>${value === null || value === undefined ? "未获取到" : "页面可见数据"}</small></div>`; }
 
+function profileTaskPage() {
+  layout('profile', [
+    '<section class="page-title"><div class="eyebrow">Phase 3 · 达人主页采集</div><h1>发现主页内的作品</h1><p class="lead">系统读取主页当前可访问的作品链接，再逐条读取真实发布时间，只保留范围内内容。当前仅支持抖音主页。</p></section>',
+    '<section class="card form-card"><div class="notice"><strong>开始前</strong><br>请保持采集浏览器已登录且窗口打开。系统不会输入或保存任何社交平台密码。</div>',
+    '<form id="profile-form"><div class="field"><label for="profile-name">任务名称</label><input id="profile-name" name="name" placeholder="例如：6 月主页内容" required maxlength="80" /></div>',
+    '<div class="field"><label for="profile-url">抖音达人主页链接</label><input id="profile-url" name="url" type="url" placeholder="https://www.douyin.com/user/..." required /></div>',
+    '<div class="field"><label for="start-date">开始日期</label><input id="start-date" name="startDate" type="date" required /></div>',
+    '<div class="field"><label for="end-date">结束日期</label><input id="end-date" name="endDate" type="date" required /></div>',
+    '<div class="field"><label for="max-items">最大采集数量</label><select id="max-items" name="maxItems"><option value="10">10 条</option><option value="20">20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div>',
+    '<div class="form-actions"><button class="primary-button" type="submit">开始发现作品</button><button class="secondary-button" type="button" data-page="new">返回单作品采集</button></div></form></section><div id="profile-result"></div>'
+  ].join(''));
+  document.querySelector('#profile-form').addEventListener('submit', discoverProfile);
+}
+
+async function discoverProfile(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const button = event.currentTarget.querySelector('button[type=submit]');
+  const task = { id: crypto.randomUUID(), name: form.get('name'), mode: 'profile', modeLabel: '主页发现', platform: 'douyin', source: form.get('url'), itemCount: 0, status: 'running', statusLabel: '发现中', createdAt: new Date().toISOString() };
+  button.disabled = true; button.textContent = '正在读取主页…'; saveTasks([task, ...readTasks()]);
+  try {
+    const response = await fetch('/api/profile/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: form.get('url'), startDate: form.get('startDate'), endDate: form.get('endDate'), maxItems: Number(form.get('maxItems')) }) });
+    const result = await response.json(); if (!response.ok) throw new Error(result.error || '主页采集失败');
+    task.status = 'completed'; task.statusLabel = '已完成'; task.itemCount = result.works.length; task.result = result; saveTasks([task, ...readTasks().filter((item) => item.id !== task.id)]); renderProfileResult(result);
+  } catch (error) {
+    task.status = 'failed'; task.statusLabel = '失败'; task.error = error.message; saveTasks([task, ...readTasks().filter((item) => item.id !== task.id)]); document.querySelector('#profile-result').innerHTML = `<section class="section"><div class="notice error-notice"><strong>主页采集失败</strong><br>${escapeHtml(error.message)}</div></section>`;
+  } finally { button.disabled = false; button.textContent = '再次发现作品'; }
+}
+
+function renderProfileResult(result) {
+  const rows = result.works.map((work) => `<div class="task-row"><div><div class="task-name">${escapeHtml(work.title)}</div><div class="task-meta">发布时间：${escapeHtml(work.publishedAt)}</div></div><a class="card-link" href="${escapeHtml(work.url)}" target="_blank" rel="noreferrer">打开作品 ↗</a></div>`).join('');
+  document.querySelector('#profile-result').innerHTML = `<section class="section"><div class="section-heading"><h2>发现结果</h2><span class="status ready">真实完成</span></div><div class="notice">发现候选 ${result.discoveredCandidates} 条，范围内 ${result.works.length} 条；范围外 ${result.skipped.outOfRange} 条，未取得发布时间 ${result.skipped.missingDate} 条。${escapeHtml(result.note)}</div>${rows ? `<div class="task-list">${rows}</div>` : `<div class="empty">未发现符合日期范围的作品。</div>`}</section>`;
+}
+
 function simplePage(page, eyebrow, title, message) { layout(page, `<section class="page-title"><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p class="lead">${message}</p></section><div class="empty">此模块将在对应 Phase 实现。当前没有可执行的真实功能。</div>`); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char])); }
 function showToast(message) { const toast = document.createElement("div"); toast.className = "toast"; toast.textContent = message; document.body.append(toast); setTimeout(() => toast.remove(), 2300); }
-function navigate(page) { if (page === "home") homePage(); else if (page === "new") newTaskPage(); else if (page === "update") simplePage("update", "Phase 7 · 历史数据", "更新已有数据", "上传历史 Word，通过原有作品链接更新互动数据。字段级保护和对比 Word 将在后续阶段实现。"); else if (page === "history") simplePage("history", "本地记录", "任务记录", "这里将集中展示本地任务、截图和导出记录。"); else simplePage("settings", "工作区设置", "设置", "这里将提供最大采集条数、浏览器说明和默认输出位置。"); }
+function navigate(page) { if (page === "home") homePage(); else if (page === "new") newTaskPage(); else if (page === "profile") profileTaskPage(); else if (page === "update") simplePage("update", "Phase 7 · 历史数据", "更新已有数据", "上传历史 Word，通过原有作品链接更新互动数据。字段级保护和对比 Word 将在后续阶段实现。"); else if (page === "history") simplePage("history", "本地记录", "任务记录", "这里将集中展示本地任务、截图和导出记录。"); else simplePage("settings", "工作区设置", "设置", "这里将提供最大采集条数、浏览器说明和默认输出位置。"); }
 navigate("home");
