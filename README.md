@@ -15,6 +15,14 @@
 - Git 仓库：已初始化
 - GitHub 远程仓库：已关联并 push 到 `892239570-gif/-2.0`
 
+## 本地运行
+
+```powershell
+npm run dev
+```
+
+打开 `http://127.0.0.1:4173` 即可使用当前 Phase 1 基础应用。技术架构和阶段边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ## 本地工具
 
 - GitHub CLI 使用项目目录下 `.tools/gh` 的免安装版本，避免依赖系统包管理器。

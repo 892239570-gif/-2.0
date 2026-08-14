@@ -1,0 +1,11 @@
+{
+  "name": "creator-social-content-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "达人社交媒体内容采集与数据更新工具",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  }
+}
