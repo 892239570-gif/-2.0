@@ -76,7 +76,10 @@ function runChrome(url, screenshotPath, domPath, logPath) {
       clearTimeout(timer);
       const dom = Buffer.concat(output).toString("utf8");
       await import("node:fs/promises").then(({ writeFile }) => Promise.all([writeFile(domPath, dom), writeFile(logPath, Buffer.concat(errors))]));
-      if (code !== 0) reject(new Error("浏览器无法打开页面，请检查链接、网络或登录状态。"));
+      if (code !== 0) {
+        const browserLog = Buffer.concat(errors).toString("utf8").trim();
+        reject(new Error(browserLog ? "浏览器无法打开页面，请检查链接、网络或登录状态。" : "采集浏览器可能仍在打开。请关闭该采集浏览器窗口后重新采集。"));
+      }
       else resolve(dom);
     });
   });
