@@ -107,20 +107,25 @@ async function captureVisibleChrome(url, platform, screenshotPath, domPath, logP
   try {
     await commandDevTools(target.webSocketDebuggerUrl, "Page.navigate", { url });
     let dom = "";
+    let videoReady = platform !== "douyin.com";
+    let pageReady = false;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await delay(5000);
       const domResult = await commandDevTools(target.webSocketDebuggerUrl, "Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
       dom = domResult.result?.value || "";
-      const visibleText = dom.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      if (visibleText.length > 180 && !/加载中\s*$/.test(visibleText)) break;
+      const videoResult = await commandDevTools(target.webSocketDebuggerUrl, "Runtime.evaluate", { expression: "(() => { const video = document.querySelector('video'); if (video) { video.muted = true; video.play().catch(() => {}); } return { readyState: video?.readyState || 0, width: video?.videoWidth || 0, currentTime: video?.currentTime || 0 }; })()", returnByValue: true });
+      const video = videoResult.result?.value || {};
+      videoReady = platform !== "douyin.com" || (video.readyState >= 2 && video.width > 0 && video.currentTime > 0);
+      pageReady = platform === "douyin.com" ? dom.includes('data-e2e="detail-video-info"') : dom.length > 180;
+      if (pageReady && videoReady) break;
     }
-    if (!dom || /加载中\s*$/.test(dom.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())) {
+    if (!pageReady) {
       throw new Error("页面在 30 秒内仍未加载完成。请确认采集浏览器中的作品可以正常播放后重试。");
     }
     const screenshotResult = await commandDevTools(target.webSocketDebuggerUrl, "Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
     await Promise.all([writeFile(domPath, dom), writeFile(logPath, ""), writeFile(screenshotPath, Buffer.from(screenshotResult.data || "", "base64"))]);
     if (!dom || !screenshotResult.data) throw new Error("采集浏览器未返回页面内容或截图。");
-    return dom;
+    return { dom, videoReady };
   } catch (error) {
     await writeFile(logPath, String(error.message || error));
     throw error;
@@ -170,7 +175,7 @@ async function capture(request, response) {
   const logPath = join(dataDir, "browser.log");
   try {
     await mkdir(captureProfilePath, { recursive: true });
-    const dom = await captureVisibleChrome(url.href, platformFor(url.href), screenshotPath, domPath, logPath);
+    const { dom, videoReady } = await captureVisibleChrome(url.href, platformFor(url.href), screenshotPath, domPath, logPath);
     if (/ERR_NETWORK_ACCESS_DENIED|Internet 访问被阻止|Your Internet access is blocked/i.test(dom)) {
       throw new Error("页面无法访问，当前网络或防火墙阻止了浏览器打开该平台。");
     }
@@ -179,7 +184,12 @@ async function capture(request, response) {
     const screenshot = await stat(screenshotPath);
     const genericParsed = parsePage(dom);
     const parsed = platformFor(url.href) === "douyin.com" ? parseDouyinPage(dom, genericParsed) : genericParsed;
-    const result = { taskId, url: url.href, platform: platformFor(url.href), screenshotPath: `/tasks/${taskId}/screenshots/work-001.png`, screenshotBytes: screenshot.size, ...parsed, loginStatus: "not-determined", note: parsed.metricStatus === "not-read" ? "页面已打开，但没有可靠读取到公开互动数据；未填入 0。" : "互动数据仅来自页面当前可见内容。" };
+    const note = !videoReady && platformFor(url.href) === "douyin.com"
+      ? "作品页面和互动数据已读取，但截图时视频画面尚未解码完成。"
+      : parsed.metricStatus === "not-read"
+        ? "页面已打开，但没有可靠读取到公开互动数据；未填入 0。"
+        : "互动数据仅来自页面当前可见内容。";
+    const result = { taskId, url: url.href, platform: platformFor(url.href), screenshotPath: `/tasks/${taskId}/screenshots/work-001.png`, screenshotBytes: screenshot.size, ...parsed, videoReady, loginStatus: "not-determined", note };
     await (await import("node:fs/promises")).writeFile(join(dataDir, "result.json"), JSON.stringify(result, null, 2));
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify(result));
   } catch (error) {
