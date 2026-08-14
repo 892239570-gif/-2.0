@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 4173);
 const tasksRoot = join(root, "tasks");
+const localRoot = join(root, "local");
+const captureProfilePath = join(localRoot, "capture-browser-profile");
 const supportedHosts = ["tiktok.com", "instagram.com", "facebook.com", "douyin.com", "kuaishou.com"];
 const mimeTypes = {
   ".css": "text/css; charset=utf-8",
@@ -19,10 +21,10 @@ const mimeTypes = {
   ".svg": "image/svg+xml",
 };
 
-function edgePath() {
-  return process.env.EDGE_PATH || (process.platform === "win32"
-    ? "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
-    : "microsoft-edge");
+function chromePath() {
+  return process.env.CHROME_PATH || (process.platform === "win32"
+    ? join(process.env.LOCALAPPDATA || "C:\\Users\\Default\\AppData\\Local", "Google", "Chrome", "Application", "chrome.exe")
+    : "google-chrome");
 }
 
 function platformFor(url) {
@@ -60,10 +62,10 @@ function parsePage(dom) {
   return { title, description, metrics, interaction: available.length ? available.reduce((sum, value) => sum + value, 0) : null, metricStatus: available.length ? "partial-or-complete" : "not-read" };
 }
 
-function runEdge(url, screenshotPath, domPath, logPath, profilePath) {
+function runChrome(url, screenshotPath, domPath, logPath) {
   return new Promise((resolve, reject) => {
-    const args = ["--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run", "--no-default-browser-check", "--hide-scrollbars", "--window-size=1440,1800", "--virtual-time-budget=12000", `--user-data-dir=${profilePath}`, `--screenshot=${screenshotPath}`, "--dump-dom", url];
-    const child = spawn(edgePath(), args, { windowsHide: true });
+    const args = ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--hide-scrollbars", "--window-size=1440,1800", "--virtual-time-budget=12000", `--user-data-dir=${captureProfilePath}`, `--screenshot=${screenshotPath}`, "--dump-dom", url];
+    const child = spawn(chromePath(), args, { windowsHide: true });
     const output = [];
     const errors = [];
     const timer = setTimeout(() => { child.kill(); reject(new Error("页面加载超时，请检查网络或登录状态。")); }, 30000);
@@ -78,6 +80,26 @@ function runEdge(url, screenshotPath, domPath, logPath, profilePath) {
       else resolve(dom);
     });
   });
+}
+
+function platformHome(platform) {
+  return {
+    tiktok: "https://www.tiktok.com/",
+    instagram: "https://www.instagram.com/",
+    facebook: "https://www.facebook.com/",
+    douyin: "https://www.douyin.com/",
+    kuaishou: "https://www.kuaishou.com/",
+  }[platform] || "https://www.facebook.com/";
+}
+
+async function openLoginBrowser(request, response) {
+  let payload;
+  try { payload = await jsonBody(request); } catch { payload = {}; }
+  await mkdir(captureProfilePath, { recursive: true });
+  const child = spawn(chromePath(), ["--no-first-run", "--no-default-browser-check", `--user-data-dir=${captureProfilePath}`, platformHome(payload.platform)], { detached: true, stdio: "ignore", windowsHide: false });
+  child.unref();
+  response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify({ message: "已打开采集浏览器。请自行登录并关闭该窗口后，再开始采集。" }));
 }
 
 async function jsonBody(request) {
@@ -101,9 +123,9 @@ async function capture(request, response) {
   const screenshotPath = join(screenshotsDir, "work-001.png");
   const domPath = join(dataDir, "page.html");
   const logPath = join(dataDir, "browser.log");
-  const profilePath = join(taskDir, "browser-profile");
   try {
-    const dom = await runEdge(url.href, screenshotPath, domPath, logPath, profilePath);
+    await mkdir(captureProfilePath, { recursive: true });
+    const dom = await runChrome(url.href, screenshotPath, domPath, logPath);
     if (/ERR_NETWORK_ACCESS_DENIED|Internet 访问被阻止|Your Internet access is blocked/i.test(dom)) {
       throw new Error("页面无法访问，当前网络或防火墙阻止了浏览器打开该平台。");
     }
@@ -118,6 +140,7 @@ async function capture(request, response) {
 }
 
 const server = createServer(async (request, response) => {
+  if (request.method === "POST" && request.url === "/api/browser/open-login") { await openLoginBrowser(request, response); return; }
   if (request.method === "POST" && request.url === "/api/capture") { await capture(request, response); return; }
   const requestedPath = request.url === "/" ? "/index.html" : request.url.split("?")[0];
   const baseDir = requestedPath.startsWith("/tasks/") ? tasksRoot : join(root, "public");
