@@ -62,6 +62,13 @@ function parsePage(dom) {
   return { title, description, metrics, interaction: available.length ? available.reduce((sum, value) => sum + value, 0) : null, metricStatus: available.length ? "partial-or-complete" : "not-read" };
 }
 
+function blockingReason(dom) {
+  if (/验证码中间页|captcha|安全验证|人机验证|验证中/i.test(dom)) {
+    return "页面触发了平台安全验证。请在采集浏览器中自行完成验证并关闭窗口后重试。";
+  }
+  return null;
+}
+
 function runChrome(url, screenshotPath, domPath, logPath) {
   return new Promise((resolve, reject) => {
     const args = ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--hide-scrollbars", "--window-size=1440,1800", "--virtual-time-budget=12000", `--user-data-dir=${captureProfilePath}`, `--screenshot=${screenshotPath}`, "--dump-dom", url];
@@ -132,6 +139,8 @@ async function capture(request, response) {
     if (/ERR_NETWORK_ACCESS_DENIED|Internet 访问被阻止|Your Internet access is blocked/i.test(dom)) {
       throw new Error("页面无法访问，当前网络或防火墙阻止了浏览器打开该平台。");
     }
+    const blocked = blockingReason(dom);
+    if (blocked) throw new Error(blocked);
     const screenshot = await stat(screenshotPath);
     const parsed = parsePage(dom);
     const result = { taskId, url: url.href, platform: platformFor(url.href), screenshotPath: `/tasks/${taskId}/screenshots/work-001.png`, screenshotBytes: screenshot.size, ...parsed, loginStatus: "not-determined", note: parsed.metricStatus === "not-read" ? "页面已打开，但没有可靠读取到公开互动数据；未填入 0。" : "互动数据仅来自页面当前可见内容。" };
