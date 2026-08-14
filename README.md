@@ -23,6 +23,8 @@ npm run dev
 
 打开 `http://127.0.0.1:4173` 即可使用当前 Phase 1 基础应用。技术架构和阶段边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
+Phase 2 的单作品采集接口已接入，但真实平台访问是否成功取决于当前网络、平台登录状态和页面可访问性。
+
 ## 本地工具
 
 - GitHub CLI 使用项目目录下 `.tools/gh` 的免安装版本，避免依赖系统包管理器。

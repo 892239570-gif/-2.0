@@ -79,7 +79,20 @@ h2 { margin: 0; font-size: 21px; letter-spacing: -.02em; }
 .secondary-button { color: var(--ink); background: white; border-color: var(--line); }
 .secondary-button:hover { background: #f8f9fc; }
 .notice { margin-top: 22px; padding: 14px 16px; border-radius: 13px; color: #836220; background: #fff8e8; border: 1px solid #f4e3b8; font-size: 13px; line-height: 1.6; }
+.notice strong { color: #6c501a; }
+.error-notice { color: #9b3e3e; background: #fff0f0; border-color: #f1caca; }
+.error-notice strong { color: #9b3030; }
+.primary-button:disabled { cursor: wait; opacity: .65; }
+.result-card { display: grid; grid-template-columns: minmax(260px, .9fr) minmax(320px, 1.1fr); gap: 24px; }
+.result-preview { overflow: hidden; min-height: 260px; border-radius: 15px; background: #eef1f7; display: grid; place-items: center; }
+.result-preview img { width: 100%; height: 100%; max-height: 620px; object-fit: contain; }
+.result-data h3 { margin: 0 0 8px; font-size: 18px; }
+.metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 20px 0; }
+.metric { padding: 12px; border-radius: 12px; background: #f7f8fc; border: 1px solid #edf0f6; }
+.metric span, .metric small { display: block; color: var(--muted); font-size: 12px; }
+.metric strong { display: block; min-height: 24px; margin: 3px 0; font-size: 19px; }
 .toast { position: fixed; right: 25px; bottom: 25px; padding: 13px 17px; border-radius: 12px; color: white; background: #25304b; box-shadow: 0 16px 32px rgba(21, 28, 50, .2); animation: rise .2s ease-out; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 850px) { .sidebar { width: 80px; padding: 20px 10px; } .brand { justify-content: center; padding: 0 0 25px; } .brand > div:last-child, .nav button span:last-child, .sidebar-note { display: none; } .nav button { justify-content: center; padding: 12px 8px; } .topbar { padding: 0 24px; } .main { padding: 34px 24px 60px; } .task-row { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 580px) { .grid { grid-template-columns: 1fr; } .hero-orb { display: none; } .main { padding: 28px 16px 45px; } .topbar { padding: 0 16px; } .task-row { grid-template-columns: 1fr; gap: 7px; } }
+@media (max-width: 700px) { .result-card { grid-template-columns: 1fr; } }
