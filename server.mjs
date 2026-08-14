@@ -3,6 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { extname, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseDouyinPage } from "./platforms/douyin.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 4173);
@@ -105,10 +106,18 @@ async function captureVisibleChrome(url, platform, screenshotPath, domPath, logP
   if (!target?.webSocketDebuggerUrl) throw new Error("采集浏览器中没有可用页面。请保持采集浏览器窗口打开后重试。");
   try {
     await commandDevTools(target.webSocketDebuggerUrl, "Page.navigate", { url });
-    await delay(8000);
-    const domResult = await commandDevTools(target.webSocketDebuggerUrl, "Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
+    let dom = "";
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await delay(5000);
+      const domResult = await commandDevTools(target.webSocketDebuggerUrl, "Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
+      dom = domResult.result?.value || "";
+      const visibleText = dom.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      if (visibleText.length > 180 && !/加载中\s*$/.test(visibleText)) break;
+    }
+    if (!dom || /加载中\s*$/.test(dom.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())) {
+      throw new Error("页面在 30 秒内仍未加载完成。请确认采集浏览器中的作品可以正常播放后重试。");
+    }
     const screenshotResult = await commandDevTools(target.webSocketDebuggerUrl, "Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
-    const dom = domResult.result?.value || "";
     await Promise.all([writeFile(domPath, dom), writeFile(logPath, ""), writeFile(screenshotPath, Buffer.from(screenshotResult.data || "", "base64"))]);
     if (!dom || !screenshotResult.data) throw new Error("采集浏览器未返回页面内容或截图。");
     return dom;
@@ -168,7 +177,8 @@ async function capture(request, response) {
     const blocked = blockingReason(dom);
     if (blocked) throw new Error(blocked);
     const screenshot = await stat(screenshotPath);
-    const parsed = parsePage(dom);
+    const genericParsed = parsePage(dom);
+    const parsed = platformFor(url.href) === "douyin.com" ? parseDouyinPage(dom, genericParsed) : genericParsed;
     const result = { taskId, url: url.href, platform: platformFor(url.href), screenshotPath: `/tasks/${taskId}/screenshots/work-001.png`, screenshotBytes: screenshot.size, ...parsed, loginStatus: "not-determined", note: parsed.metricStatus === "not-read" ? "页面已打开，但没有可靠读取到公开互动数据；未填入 0。" : "互动数据仅来自页面当前可见内容。" };
     await (await import("node:fs/promises")).writeFile(join(dataDir, "result.json"), JSON.stringify(result, null, 2));
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify(result));
